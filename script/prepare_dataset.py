@@ -34,7 +34,7 @@ def crop_and_pad_to_square(image):
     bottom_right = torch.max(non_zero_indices, dim=0).values
 
     # Crop the image to the bounding box
-    cropped_image = image[:, top_left[0]:bottom_right[0], top_left[1]:bottom_right[1]]
+    cropped_image = image[:, top_left[0]                          :bottom_right[0], top_left[1]:bottom_right[1]]
     cropped_height = bottom_right[0] - top_left[0]
     cropped_width = bottom_right[1] - top_left[1]
 
@@ -196,7 +196,7 @@ def main():
     # Create directory structur
 
     # Process each dataset
-    datasets = ["FIVES"]
+    datasets = ["RMHAS", "FIVES", "RITE"]
     for dataset in datasets:
         print(f"Processing {dataset} dataset...")
         process_dataset(dataset)
