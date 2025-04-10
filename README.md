@@ -52,7 +52,7 @@ pip install -r requirements.txt
 To train the model, run the training script:
 
 ```bash
-python script/train.py --mode train --datasets RITE --target artery --epochs 100 --batch_size 2 --lr 1e-4 --encoder resnet34 --checkpoint_dir ./checkpoints
+python train.py --mode train --datasets RITE --target artery --epochs 100 --batch_size 2 --lr 1e-4 --encoder resnet34 --checkpoint_dir ../model
 ```
 
 Available parameters:
@@ -70,7 +70,7 @@ Available parameters:
 You can train using multiple datasets simultaneously:
 
 ```bash
-python3 script/train.py --mode train --datasets RITE FIVES --target artery --epochs 50 --batch_size 2 --lr 0.0001 --encoder re
+python3 train.py --mode train --datasets RITE FIVES --target artery --epochs 50 --batch_size 2 --lr 0.0001 --encoder re
 snet34 --checkpoint_dir ../model
 ```
 
@@ -79,7 +79,7 @@ snet34 --checkpoint_dir ../model
 To evaluate the trained model:
 
 ```bash
-python3 script/train.py --mode eval --datasets RITE --eval_datasets RITE --target artery --encoder resnet34 --checkpoint_dir ../model
+python3 train.py --mode eval --datasets RITE --eval_datasets RITE --target artery --encoder resnet34 --checkpoint_dir ../model
 ```
 
 Additional parameters for evaluation:
