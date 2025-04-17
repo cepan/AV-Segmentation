@@ -34,7 +34,7 @@ def crop_and_pad_to_square(image):
     bottom_right = torch.max(non_zero_indices, dim=0).values
 
     # Crop the image to the bounding box
-    cropped_image = image[:, top_left[0]                          :bottom_right[0], top_left[1]:bottom_right[1]]
+    cropped_image = image[:, top_left[0]:bottom_right[0], top_left[1]:bottom_right[1]]
     cropped_height = bottom_right[0] - top_left[0]
     cropped_width = bottom_right[1] - top_left[1]
 
@@ -64,12 +64,12 @@ def extract_av_mask(av, threshold=0.2, dataset_name=None):
     if dataset_name and dataset_name.upper() == "RITE":
         # 1) basic artery/vein by diff
         artery_basic = (diff > threshold)
-        vein_basic   = (diff < -threshold)
+        vein_basic = (diff < -threshold)
         # 2) RITE overlap = green channel
         overlap = (G > threshold)
         # 3) merge overlap into both
         artery_mask = (artery_basic | overlap).float()
-        vein_mask   = (vein_basic   | overlap).float()
+        vein_mask = (vein_basic | overlap).float()
     else:
         artery_basic = (diff > threshold)
         vein_basic = (diff < -threshold)
@@ -77,15 +77,14 @@ def extract_av_mask(av, threshold=0.2, dataset_name=None):
         r_min, r_max = 95, 165  # Red range
         g_min, g_max = 25, 85    # Green range
         b_min, b_max = 105, 160  # Blue range
-        
+
         # Detect pixels where all channels are within the defined ranges
-        purple_overlap = ((R >= r_min/255) & (R <= r_max/255) & 
-                        (G >= g_min/255) & (G <= g_max/255) & 
-                        (B >= b_min/255) & (B <= b_max/255))
+        purple_overlap = ((R >= r_min/255) & (R <= r_max/255) &
+                          (G >= g_min/255) & (G <= g_max/255) &
+                          (B >= b_min/255) & (B <= b_max/255))
 
         artery_mask = (artery_basic | purple_overlap).float()
         vein_mask = (vein_basic | purple_overlap).float()
-
 
     ves_mask = (artery_mask + vein_mask).clamp(0, 1)
     H, W = artery_mask.shape
@@ -201,7 +200,8 @@ def process_dataset(dataset_name):
         av_tensor = process_image(av_path, target_size=512, is_rgb=True)
 
         # Extract artery, vein, vessel masks
-        artery_mask, vein_mask, vessel_mask, _ = extract_av_mask(av_tensor, dataset_name=dataset_name)
+        artery_mask, vein_mask, vessel_mask, _ = extract_av_mask(
+            av_tensor, dataset_name=dataset_name)
 
         # Save all processed tensors as images
         save_image(img_tensor, os.path.join(target_dir, "image", f"{key}.png"))

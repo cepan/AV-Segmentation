@@ -301,13 +301,15 @@ def main():
                         default=config.BATCH_SIZE, help='Batch size')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
     parser.add_argument('--encoder', type=str,
-                        default='resnet34', help='Encoder model')
+                        default='vgg16', help='Encoder model')
     parser.add_argument('--checkpoint_dir', type=str, default='../model',
                         help='Directory to save checkpoints (for train and eval) or load from (for predict)')
     parser.add_argument('--file_name', type=str, default=None,
                         help='Optional: Specific file name for prediction. If not provided, predict on all images in the eval_datasets folder.')
-    parser.add_argument('--visualize', action='store_true', 
-                    help='Create visualizations by overlaying masks on original images')
+    parser.add_argument('--visualize', action='store_true',
+                        help='Create visualizations by overlaying masks on original images')
+    parser.add_argument('--freeze_encoder', action='store_true',
+                        help='Freeze the encoder weights during training')
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -366,8 +368,15 @@ def main():
             in_channels=3,
             classes=1  # Binary segmentation for single vessel type
         ).to(device)
+
+        if args.freeze_encoder:
+            print("Freezing encoder weights...")
+            for param in model.model.encoder.parameters():
+                param.requires_grad = False
+
         criterion = CombinedLoss(dice_weight=0.5, ce_weight=0.5)
-        optimizer = optim.Adam(model.parameters(), lr=args.lr)
+        optimizer = optim.Adam(
+            filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
 
         # Resume training if a checkpoint exists
         resume_checkpoint = os.path.join(
@@ -546,17 +555,18 @@ def main():
                 output = model(image_tensor)
                 pred_probs = torch.sigmoid(output)
                 pred_mask = (pred_probs > 0.5).float()
-                
-                # masks = cv2.imread('../processed_data/RMHAS/vessel/3.png', cv2.IMREAD_GRAYSCALE)
-                # masks = torch.tensor(masks, dtype=torch.float32)
-                # masks = masks.unsqueeze(0).unsqueeze(0) / 255.0
-                # masks = masks.clamp(0, 1).to(device)
-                # print(masks)
-                # print(pred_mask)
-                # print(masks.shape)
-                # print(pred_mask.shape)
-                # batch_iou = iou_score(pred_mask, masks)
-                # print(batch_iou)
+
+                masks = cv2.imread(
+                    '../processed_data/RMHAS/vessel/3.png', cv2.IMREAD_GRAYSCALE)
+                masks = torch.tensor(masks, dtype=torch.float32)
+                masks = masks.unsqueeze(0).unsqueeze(0) / 255.0
+                masks = masks.clamp(0, 1).to(device)
+                print(masks)
+                print(pred_mask)
+                print(masks.shape)
+                print(pred_mask.shape)
+                batch_iou = iou_score(pred_mask, masks)
+                print(batch_iou)
 
                 # Remove extra dimensions and convert to uint8 image.
                 pred_mask = pred_mask.squeeze().cpu().numpy()
@@ -564,21 +574,24 @@ def main():
                 base_name = os.path.splitext(filename)[0]
                 save_path = os.path.join(out_dir, f"{base_name}_mask.png")
                 cv2.imwrite(save_path, pred_mask_img)
-                
+
                 if args.visualize:
                     original_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-                    
+
                     # Create a colored mask for better visualization (e.g., red)
                     colored_mask = np.zeros_like(original_bgr)
                     colored_mask[:, :, 2] = pred_mask_img  # Red channel
-                    
+
                     # Overlay with transparency
                     alpha = 0.5
-                    visualization = cv2.addWeighted(original_bgr, 1, colored_mask, alpha, 0)
-                    
-                    vis_save_path = os.path.join(out_dir, f"{base_name}_visualization.png")
+                    visualization = cv2.addWeighted(
+                        original_bgr, 1, colored_mask, alpha, 0)
+
+                    vis_save_path = os.path.join(
+                        out_dir, f"{base_name}_visualization.png")
                     cv2.imwrite(vis_save_path, visualization)
-                    print(f"Saved visualization for {filename} at {vis_save_path}")
+                    print(
+                        f"Saved visualization for {filename} at {vis_save_path}")
 
                 print(f"Saved mask for {filename} at {save_path}")
 
