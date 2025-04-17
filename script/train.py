@@ -34,6 +34,88 @@ def iou_score(y_pred, y_true, smooth=1e-6):
     return (intersection + smooth) / (union + smooth)
 
 
+def debug_prediction(model, image_path, mask_path, device, transform):
+    """
+    Debugging function to trace through prediction process and compare with ground truth
+    """
+    # 1. Load and preprocess the image
+    image = cv2.imread(image_path)
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    transformed = transform(image=image)
+    image_tensor = transformed["image"].unsqueeze(0).to(device)
+
+    # 2. Load and preprocess the ground truth mask
+    gt_mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+    gt_mask_tensor = torch.tensor(
+        gt_mask, dtype=torch.float32).unsqueeze(0).unsqueeze(0) / 255.0
+    gt_mask_tensor = gt_mask_tensor.clamp(0, 1).to(device)
+
+    # Print debug information about the inputs
+    print(f"Image tensor shape: {image_tensor.shape}")
+    print(
+        f"Image tensor range: [{image_tensor.min().item()}, {image_tensor.max().item()}]")
+    print(f"GT mask tensor shape: {gt_mask_tensor.shape}")
+    print(
+        f"GT mask tensor range: [{gt_mask_tensor.min().item()}, {gt_mask_tensor.max().item()}]")
+    print(
+        f"GT mask positive pixels: {(gt_mask_tensor > 0.5).sum().item()} / {gt_mask_tensor.numel()}")
+
+    # 3. Generate prediction
+    model.eval()
+    with torch.no_grad():
+        output = model(image_tensor)
+        pred_probs = torch.sigmoid(output)
+
+        # Try different thresholds
+        thresholds = [0.1, 0.3, 0.5, 0.7, 0.9]
+        for threshold in thresholds:
+            pred_mask = (pred_probs > threshold).float()
+
+            # Calculate metrics
+            batch_iou = iou_score(pred_mask, gt_mask_tensor)
+
+            # Additional diagnostics
+            intersection = ((pred_mask > 0.5) & (
+                gt_mask_tensor > 0.5)).sum().item()
+            union = (pred_mask > 0.5).sum().item() + \
+                (gt_mask_tensor > 0.5).sum().item() - intersection
+
+            print(f"\nThreshold: {threshold}")
+            print(
+                f"Prediction range: [{pred_probs.min().item()}, {pred_probs.max().item()}]")
+            print(
+                f"Positive predictions: {(pred_mask > 0.5).sum().item()} / {pred_mask.numel()}")
+            print(f"IoU score: {batch_iou.item()}")
+            print(f"Intersection: {intersection}, Union: {union}")
+
+    # 4. Visualize results
+    pred_mask_np = pred_mask.squeeze().cpu().numpy()
+    gt_mask_np = gt_mask_tensor.squeeze().cpu().numpy()
+
+    # Save comparison images
+    os.makedirs("debug_output", exist_ok=True)
+
+    # Save prediction
+    pred_img = (pred_mask_np * 255).astype(np.uint8)
+    cv2.imwrite("debug_output/prediction.png", pred_img)
+
+    # Save ground truth
+    gt_img = (gt_mask_np * 255).astype(np.uint8)
+    cv2.imwrite("debug_output/ground_truth.png", gt_img)
+
+    # Save difference map
+    diff_img = np.zeros_like(pred_img)
+    # True positive (white)
+    diff_img[np.logical_and(pred_mask_np > 0.5, gt_mask_np > 0.5)] = 255
+    # False positive (gray)
+    diff_img[np.logical_and(pred_mask_np > 0.5, gt_mask_np <= 0.5)] = 100
+    # False negative (light gray)
+    diff_img[np.logical_and(pred_mask_np <= 0.5, gt_mask_np > 0.5)] = 180
+    cv2.imwrite("debug_output/difference.png", diff_img)
+
+    return batch_iou.item()
+
+
 class SegmentationDataset(Dataset):
     def __init__(self, img_dir, artery_dir, vein_dir, vessel_dir=None, transform=None, target_type="artery"):
         """
@@ -310,6 +392,8 @@ def main():
                         help='Create visualizations by overlaying masks on original images')
     parser.add_argument('--freeze_encoder', action='store_true',
                         help='Freeze the encoder weights during training')
+    parser.add_argument('--debug', action='store_true',
+                        help='Enable debugging mode for detailed diagnostics')
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -556,18 +640,6 @@ def main():
                 pred_probs = torch.sigmoid(output)
                 pred_mask = (pred_probs > 0.5).float()
 
-                masks = cv2.imread(
-                    '../processed_data/RMHAS/vessel/3.png', cv2.IMREAD_GRAYSCALE)
-                masks = torch.tensor(masks, dtype=torch.float32)
-                masks = masks.unsqueeze(0).unsqueeze(0) / 255.0
-                masks = masks.clamp(0, 1).to(device)
-                print(masks)
-                print(pred_mask)
-                print(masks.shape)
-                print(pred_mask.shape)
-                batch_iou = iou_score(pred_mask, masks)
-                print(batch_iou)
-
                 # Remove extra dimensions and convert to uint8 image.
                 pred_mask = pred_mask.squeeze().cpu().numpy()
                 pred_mask_img = (pred_mask * 255).astype(np.uint8)
@@ -594,6 +666,22 @@ def main():
                         f"Saved visualization for {filename} at {vis_save_path}")
 
                 print(f"Saved mask for {filename} at {save_path}")
+
+        if args.debug and args.file_name:
+            # Get the corresponding ground truth mask path
+            image_path = os.path.join(
+                dataset_paths[args.eval_datasets[0]]['img_dir'], args.file_name)
+            mask_path = os.path.join(
+                dataset_paths[args.eval_datasets[0]][f'{args.target}_dir'], args.file_name)
+
+            if os.path.exists(image_path) and os.path.exists(mask_path):
+                print(f"\nRunning diagnostics on {args.file_name}...")
+                iou = debug_prediction(
+                    model, image_path, mask_path, device, get_transforms(train=False))
+                print(f"Debug IoU on image: {iou}")
+            else:
+                print(
+                    f"Debug image or mask not found: {image_path}, {mask_path}")
 
 
 if __name__ == "__main__":
