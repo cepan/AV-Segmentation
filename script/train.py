@@ -104,12 +104,12 @@ class SegmentationDataset(Dataset):
             image = augmented['image']
             mask = augmented['mask']
 
-        # Convert to torch tensors
-        if not isinstance(image, torch.Tensor):
-            image = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
+        # # Convert to torch tensors
+        # if not isinstance(image, torch.Tensor):
+        #     image = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
 
-        if not isinstance(mask, torch.Tensor):
-            mask = torch.from_numpy(mask).unsqueeze(0).float() / 255.0
+        # if not isinstance(mask, torch.Tensor):
+        #     mask = torch.from_numpy(mask).unsqueeze(0).float() / 255.0
 
         return image, mask
 
@@ -176,6 +176,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, device,
             pbar = tqdm(
                 train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]")
             for images, masks in pbar:
+                # images, masks = images.to(device), masks.unsqueeze(1).to(device)
                 images = images.to(device)
                 masks = (masks.unsqueeze(1) / 255.0).clamp(0, 1).to(device)
 
@@ -208,6 +209,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, device,
 
             with torch.no_grad():
                 for images, masks in tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]"):
+                    # images, masks = images.to(device), masks.unsqueeze(1).to(device)
                     images = images.to(device)
                     masks = (masks.unsqueeze(1) / 255.0).clamp(0, 1).to(device)
 
@@ -304,6 +306,8 @@ def main():
                         help='Directory to save checkpoints (for train and eval) or load from (for predict)')
     parser.add_argument('--file_name', type=str, default=None,
                         help='Optional: Specific file name for prediction. If not provided, predict on all images in the eval_datasets folder.')
+    parser.add_argument('--visualize', action='store_true', 
+                    help='Create visualizations by overlaying masks on original images')
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -446,6 +450,7 @@ def main():
 
         with torch.no_grad():
             for images, masks in tqdm(eval_loader, desc="Evaluation"):
+                # images, masks = images.to(device), masks.unsqueeze(1).to(device)
                 images = images.to(device)
                 masks = (masks.unsqueeze(1) / 255.0).clamp(0, 1).to(device)
                 outputs = model(images)
@@ -540,14 +545,42 @@ def main():
                 image_tensor = transformed["image"].unsqueeze(0).to(device)
                 output = model(image_tensor)
                 pred_probs = torch.sigmoid(output)
-                pred_mask = (pred_probs > 0.3).float()
+                pred_mask = (pred_probs > 0.5).float()
+                
+                # masks = cv2.imread('../processed_data/RMHAS/vessel/3.png', cv2.IMREAD_GRAYSCALE)
+                # masks = torch.tensor(masks, dtype=torch.float32)
+                # masks = masks.unsqueeze(0).unsqueeze(0) / 255.0
+                # masks = masks.clamp(0, 1).to(device)
+                # print(masks)
+                # print(pred_mask)
+                # print(masks.shape)
+                # print(pred_mask.shape)
+                # batch_iou = iou_score(pred_mask, masks)
+                # print(batch_iou)
 
                 # Remove extra dimensions and convert to uint8 image.
                 pred_mask = pred_mask.squeeze().cpu().numpy()
                 pred_mask_img = (pred_mask * 255).astype(np.uint8)
-                save_path = os.path.join(out_dir, filename)
+                base_name = os.path.splitext(filename)[0]
+                save_path = os.path.join(out_dir, f"{base_name}_mask.png")
                 cv2.imwrite(save_path, pred_mask_img)
-                print(f"Saved prediction for {filename} at {save_path}")
+                
+                if args.visualize:
+                    original_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+                    
+                    # Create a colored mask for better visualization (e.g., red)
+                    colored_mask = np.zeros_like(original_bgr)
+                    colored_mask[:, :, 2] = pred_mask_img  # Red channel
+                    
+                    # Overlay with transparency
+                    alpha = 0.5
+                    visualization = cv2.addWeighted(original_bgr, 1, colored_mask, alpha, 0)
+                    
+                    vis_save_path = os.path.join(out_dir, f"{base_name}_visualization.png")
+                    cv2.imwrite(vis_save_path, visualization)
+                    print(f"Saved visualization for {filename} at {vis_save_path}")
+
+                print(f"Saved mask for {filename} at {save_path}")
 
 
 if __name__ == "__main__":

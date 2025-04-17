@@ -51,35 +51,55 @@ def crop_and_pad_to_square(image):
     return padded_image
 
 
-def extract_av_mask(av, threshold=0.2):
+def extract_av_mask(av, threshold=0.2, dataset_name=None):
     """
     Extract artery, vein, and vessel masks from the AV image.
-    Args:
-        av (torch.Tensor): AV image tensor with shape (3, H, W).
-        threshold (float): Threshold for determining artery and vein masks.
-    Returns:
-        tuple: Artery mask, vein mask, vessel mask, AV mask tensors.
+    For RITE, overlaps are painted green and should be added to both artery & vein.
+    Otherwise we use the original red/blue split + green = intersection.
     """
-    # Split the image into R, G, B channels
-    R = av[0]  # Red channel
-    B = av[2]  # Blue channel
+
+    R, G, B = av[0], av[1], av[2]
     diff = R - B
 
-    # Create masks for arteries and veins
-    artery_mask = (diff > threshold).float()
-    vein_mask = (diff < -threshold).float()
+    if dataset_name and dataset_name.upper() == "RITE":
+        # 1) basic artery/vein by diff
+        artery_basic = (diff > threshold)
+        vein_basic   = (diff < -threshold)
+        # 2) RITE overlap = green channel
+        overlap = (G > threshold)
+        # 3) merge overlap into both
+        artery_mask = (artery_basic | overlap).float()
+        vein_mask   = (vein_basic   | overlap).float()
+    else:
+        artery_basic = (diff > threshold)
+        vein_basic = (diff < -threshold)
+
+        r_min, r_max = 95, 165  # Red range
+        g_min, g_max = 25, 85    # Green range
+        b_min, b_max = 105, 160  # Blue range
+        
+        # Detect pixels where all channels are within the defined ranges
+        purple_overlap = ((R >= r_min/255) & (R <= r_max/255) & 
+                        (G >= g_min/255) & (G <= g_max/255) & 
+                        (B >= b_min/255) & (B <= b_max/255))
+
+        artery_mask = (artery_basic | purple_overlap).float()
+        vein_mask = (vein_basic | purple_overlap).float()
+
+
     ves_mask = (artery_mask + vein_mask).clamp(0, 1)
-
-    # Create an empty AV mask
     H, W = artery_mask.shape
-    av_mask = torch.zeros(3, H, W)
+    av_mask = torch.zeros(3, H, W, device=av.device, dtype=av.dtype)
+    av_mask[0] = artery_mask       # red
+    av_mask[2] = vein_mask         # blue
+    av_mask[1] = (artery_mask * vein_mask)  # green = intersection
 
-    # Assign colors: Red for artery, Blue for vein, Green for overlap
-    av_mask[0] = artery_mask  # Red
-    av_mask[2] = vein_mask    # Blue
-    av_mask[1] = (artery_mask * vein_mask)  # Green for overlap
-
-    return artery_mask.unsqueeze(0), vein_mask.unsqueeze(0), ves_mask.unsqueeze(0), av_mask
+    return (
+        artery_mask.unsqueeze(0),
+        vein_mask.unsqueeze(0),
+        ves_mask.unsqueeze(0),
+        av_mask
+    )
 
 
 def normalize_image(image, tolerance=1e-5):
@@ -181,7 +201,7 @@ def process_dataset(dataset_name):
         av_tensor = process_image(av_path, target_size=512, is_rgb=True)
 
         # Extract artery, vein, vessel masks
-        artery_mask, vein_mask, vessel_mask, _ = extract_av_mask(av_tensor)
+        artery_mask, vein_mask, vessel_mask, _ = extract_av_mask(av_tensor, dataset_name=dataset_name)
 
         # Save all processed tensors as images
         save_image(img_tensor, os.path.join(target_dir, "image", f"{key}.png"))
