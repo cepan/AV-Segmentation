@@ -602,33 +602,44 @@ def main():
         model.load_state_dict(checkpoint['model_state_dict'])
         model.eval()
 
-        # Use the non-augmented transformation for prediction.
+        # Use the non-augmented transformation for prediction
         transform = get_transforms(train=False)
 
-        # Define output directory for predictions.
+        # Define output directory for predictions
         out_dir = os.path.join("../saved_image", model_name)
         os.makedirs(out_dir, exist_ok=True)
 
-        # Collect files to process from each evaluation dataset.
+        # Collect files to process from each evaluation dataset
         files_to_process = []
         for d in args.eval_datasets:
-            # Images are expected in: processed_data/<eval_dataset>/<target>/
-            input_dir = os.path.join("../processed_data", d, args.target)
-            if args.file_name:
-                file_path = os.path.join(input_dir, args.file_name)
-                if os.path.exists(file_path):
-                    files_to_process.append((file_path, args.file_name))
-                else:
-                    print(f"File {args.file_name} not found in {input_dir}")
-            else:
-                for f in os.listdir(input_dir):
-                    if f.lower().endswith(('.png', '.jpg', '.jpeg')):
-                        file_path = os.path.join(input_dir, f)
-                        files_to_process.append((file_path, f))
+            img_dir = dataset_paths[d]['img_dir']
+            mask_dir = dataset_paths[d][f'{args.target}_dir']
 
-        # Predict and save output for each file.
+            if args.file_name:
+                file_path = os.path.join(img_dir, args.file_name)
+                if os.path.exists(file_path):
+                    files_to_process.append(
+                        (file_path, args.file_name, mask_dir))
+                else:
+                    print(f"File {args.file_name} not found in {img_dir}")
+            else:
+                for f in os.listdir(img_dir):
+                    if f.lower().endswith(('.png', '.jpg', '.jpeg')):
+                        file_path = os.path.join(img_dir, f)
+                        files_to_process.append((file_path, f, mask_dir))
+
+        # Track metrics if we're in debug mode
+        if args.debug:
+            debug_metrics = {
+                'iou_scores': [],
+                'thresholds': [0.1, 0.3, 0.5, 0.7, 0.9]
+            }
+            os.makedirs("debug_output", exist_ok=True)
+
+        # Predict and save output for each file
         with torch.no_grad():
-            for file_path, filename in files_to_process:
+            for file_path, filename, mask_dir in tqdm(files_to_process, desc="Predicting"):
+                # Load and process image
                 image = cv2.imread(file_path)
                 if image is None:
                     print(f"Warning: could not read image {file_path}")
@@ -636,52 +647,135 @@ def main():
                 image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
                 transformed = transform(image=image)
                 image_tensor = transformed["image"].unsqueeze(0).to(device)
+
+                # Generate prediction
                 output = model(image_tensor)
                 pred_probs = torch.sigmoid(output)
                 pred_mask = (pred_probs > 0.5).float()
 
-                # Remove extra dimensions and convert to uint8 image.
-                pred_mask = pred_mask.squeeze().cpu().numpy()
-                pred_mask_img = (pred_mask * 255).astype(np.uint8)
+                # Save prediction mask
+                pred_mask_np = pred_mask.squeeze().cpu().numpy()
+                pred_mask_img = (pred_mask_np * 255).astype(np.uint8)
                 base_name = os.path.splitext(filename)[0]
                 save_path = os.path.join(out_dir, f"{base_name}_mask.png")
                 cv2.imwrite(save_path, pred_mask_img)
+                print(f"Saved mask for {filename} at {save_path}")
 
+                # Handle visualization if requested
                 if args.visualize:
                     original_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-
                     # Create a colored mask for better visualization (e.g., red)
                     colored_mask = np.zeros_like(original_bgr)
                     colored_mask[:, :, 2] = pred_mask_img  # Red channel
-
                     # Overlay with transparency
                     alpha = 0.5
                     visualization = cv2.addWeighted(
                         original_bgr, 1, colored_mask, alpha, 0)
-
                     vis_save_path = os.path.join(
                         out_dir, f"{base_name}_visualization.png")
                     cv2.imwrite(vis_save_path, visualization)
-                    print(
-                        f"Saved visualization for {filename} at {vis_save_path}")
+                    print(f"Saved visualization at {vis_save_path}")
 
-                print(f"Saved mask for {filename} at {save_path}")
+                # Run debug diagnostics if requested
+                if args.debug:
+                    # Get corresponding ground truth mask
+                    gt_mask_path = os.path.join(mask_dir, filename)
+                    if os.path.exists(gt_mask_path):
+                        print(f"\nRunning diagnostics on {filename}...")
+                        gt_mask = cv2.imread(
+                            gt_mask_path, cv2.IMREAD_GRAYSCALE)
+                        gt_mask_tensor = torch.tensor(
+                            gt_mask, dtype=torch.float32).unsqueeze(0).unsqueeze(0) / 255.0
+                        gt_mask_tensor = gt_mask_tensor.clamp(0, 1).to(device)
 
-        if args.debug and args.file_name:
-            # Get the corresponding ground truth mask path
-            image_path = os.path.join(
-                dataset_paths[args.eval_datasets[0]]['img_dir'], args.file_name)
-            mask_path = os.path.join(
-                dataset_paths[args.eval_datasets[0]][f'{args.target}_dir'], args.file_name)
+                        # Print debug information about the inputs
+                        print(f"Image tensor shape: {image_tensor.shape}")
+                        print(
+                            f"Image tensor range: [{image_tensor.min().item()}, {image_tensor.max().item()}]")
+                        print(f"GT mask tensor shape: {gt_mask_tensor.shape}")
+                        print(
+                            f"GT mask tensor range: [{gt_mask_tensor.min().item()}, {gt_mask_tensor.max().item()}]")
+                        print(
+                            f"GT mask positive pixels: {(gt_mask_tensor > 0.5).sum().item()} / {gt_mask_tensor.numel()}")
 
-            if os.path.exists(image_path) and os.path.exists(mask_path):
-                print(f"\nRunning diagnostics on {args.file_name}...")
-                iou = debug_prediction(
-                    model, image_path, mask_path, device, get_transforms(train=False))
-                print(f"Debug IoU on image: {iou}")
-            else:
-                print(
-                    f"Debug image or mask not found: {image_path}, {mask_path}")
+                        # Try different thresholds
+                        for threshold in debug_metrics['thresholds']:
+                            pred_threshold = (pred_probs > threshold).float()
+
+                            # Calculate metrics
+                            batch_iou = iou_score(
+                                pred_threshold, gt_mask_tensor)
+
+                            # Additional diagnostics
+                            intersection = ((pred_threshold > 0.5) & (
+                                gt_mask_tensor > 0.5)).sum().item()
+                            union = (pred_threshold > 0.5).sum().item(
+                            ) + (gt_mask_tensor > 0.5).sum().item() - intersection
+
+                            print(f"\nThreshold: {threshold}")
+                            print(
+                                f"Prediction range: [{pred_probs.min().item()}, {pred_probs.max().item()}]")
+                            print(
+                                f"Positive predictions: {(pred_threshold > 0.5).sum().item()} / {pred_threshold.numel()}")
+                            print(f"IoU score: {batch_iou.item()}")
+                            print(
+                                f"Intersection: {intersection}, Union: {union}")
+
+                            debug_metrics['iou_scores'].append(
+                                (filename, threshold, batch_iou.item()))
+
+                        # Save visualization images for debug
+                        os.makedirs(os.path.join(
+                            "debug_output", base_name), exist_ok=True)
+
+                        # Save prediction
+                        cv2.imwrite(os.path.join(
+                            "debug_output", base_name, "prediction.png"), pred_mask_img)
+
+                        # Save ground truth
+                        gt_img = (gt_mask_tensor.squeeze(
+                        ).cpu().numpy() * 255).astype(np.uint8)
+                        cv2.imwrite(os.path.join("debug_output",
+                                    base_name, "ground_truth.png"), gt_img)
+
+                        # Save difference map
+                        diff_img = np.zeros_like(pred_mask_img)
+                        # True positive (white)
+                        diff_img[np.logical_and(
+                            pred_mask_np > 0.5, gt_mask_tensor.squeeze().cpu().numpy() > 0.5)] = 255
+                        # False positive (gray)
+                        diff_img[np.logical_and(
+                            pred_mask_np > 0.5, gt_mask_tensor.squeeze().cpu().numpy() <= 0.5)] = 100
+                        # False negative (light gray)
+                        diff_img[np.logical_and(
+                            pred_mask_np <= 0.5, gt_mask_tensor.squeeze().cpu().numpy() > 0.5)] = 180
+
+                        cv2.imwrite(os.path.join("debug_output",
+                                    base_name, "difference.png"), diff_img)
+
+                    else:
+                        print(
+                            f"Ground truth mask not found at {gt_mask_path} for debugging")
+
+        # If in debug mode, print summary of results
+        if args.debug and debug_metrics['iou_scores']:
+            print("\n===== Debug Summary =====")
+            # Group by threshold and calculate average IoU
+            threshold_averages = {}
+            for _, threshold, iou in debug_metrics['iou_scores']:
+                if threshold not in threshold_averages:
+                    threshold_averages[threshold] = []
+                threshold_averages[threshold].append(iou)
+
+            print("Average IoU by threshold:")
+            for threshold, scores in threshold_averages.items():
+                avg_iou = sum(scores) / len(scores)
+                print(f"Threshold {threshold}: {avg_iou:.4f}")
+
+            # Find best threshold
+            best_threshold = max(threshold_averages.items(),
+                                 key=lambda x: sum(x[1])/len(x[1]))[0]
+            print(f"\nBest threshold: {best_threshold}")
 
 
 if __name__ == "__main__":
